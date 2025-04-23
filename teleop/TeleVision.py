@@ -6,6 +6,7 @@ from multiprocessing import Array, Process, shared_memory, Queue, Manager, Event
 import numpy as np
 import asyncio
 from webrtc.zed_server import *
+import socket
 
 class OpenTeleVision:
     def __init__(self, img_shape, shm_name, queue, toggle_streaming, stream_mode="image", cert_file="./cert.pem", key_file="./key.pem", ngrok=False):
@@ -15,9 +16,10 @@ class OpenTeleVision:
 
         if ngrok:
             self.app = Vuer(host='0.0.0.0', queries=dict(grid=False), queue_len=3)
+            self.app.ngrok_url = None  # Will be set if ngrok tunnel established
         else:
             self.app = Vuer(host='0.0.0.0', cert=cert_file, key=key_file, queries=dict(grid=False), queue_len=3)
-
+        
         self.app.add_handler("HAND_MOVE")(self.on_hand_move)
         self.app.add_handler("CAMERA_MOVE")(self.on_cam_move)
         if stream_mode == "image":
@@ -43,12 +45,14 @@ class OpenTeleVision:
             else:
                 logging.basicConfig(level=logging.INFO)
             Args.img_shape = img_shape
-            # Args.shm_name = shm_name
             Args.fps = 60
 
-            ssl_context = ssl.SSLContext()
-            ssl_context.load_cert_chain(cert_file, key_file)
-
+            # Use HTTP instead of HTTPS for WebRTC server to avoid SSL handshake issues
+            ssl_context = None
+            # Commented out to disable SSL - this fixes the "Invalid method encountered" errors
+            # ssl_context = ssl.SSLContext()
+            # ssl_context.load_cert_chain(cert_file, key_file)
+            
             app = web.Application()
             cors = aiohttp_cors.setup(app, defaults={
                 "*": aiohttp_cors.ResourceOptions(
@@ -64,10 +68,21 @@ class OpenTeleVision:
             cors.add(app.router.add_get("/client.js", javascript))
             cors.add(app.router.add_post("/offer", rtc.offer))
 
-            self.webrtc_process = Process(target=web.run_app, args=(app,), kwargs={"host": "0.0.0.0", "port": 8080, "ssl_context": ssl_context})
+            # WebRTC server always uses port 8080
+            webrtc_port = 8080
+            
+            self.webrtc_process = Process(
+                target=web.run_app,
+                args=(app,),
+                kwargs={
+                    "host": "0.0.0.0",
+                    "port": webrtc_port,
+                    "ssl_context": ssl_context
+                }
+            )
             self.webrtc_process.daemon = True
             self.webrtc_process.start()
-            # web.run_app(app, host="0.0.0.0", port=8080, ssl_context=ssl_context)
+            print(f"WebRTC server started on port {webrtc_port} using {'HTTPS' if ssl_context else 'HTTP'}")
 
         self.process = Process(target=self.run)
         self.process.daemon = True
@@ -113,15 +128,58 @@ class OpenTeleVision:
     
     async def main_webrtc(self, session, fps=60):
         session.set @ DefaultScene(frameloop="always")
-        session.upsert @ Hands(fps=fps, stream=True, key="hands", showLeft=False, showRight=False)
+        session.upsert @ Hands(fps=fps, stream=True, key="hands", showLeft=False, showRight=True)
+        
+        # Get local network info
+        host = self.app.host
+        # Always use HTTP for WebRTC to avoid SSL handshake issues
+        protocol = "http"
+        
+        # Get client's IP address from the session if possible
+        try:
+            client_ip = session._raw_session.request.remote
+            print(f"Client connected from: {client_ip}")
+        except Exception as e:
+            client_ip = None
+            print(f"Could not determine client IP: {e}")
+        
+        # Determine the WebRTC URL based on network setup
+        webrtc_port = 8080
+        server_ip = "localhost"
+        
+        # Try to get the local IP address that's reachable from the network
+        try:
+            # Create a socket and connect to a public server
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            server_ip = s.getsockname()[0]
+            s.close()
+        except Exception as e:
+            print(f"Could not determine local IP: {e}")
+        
+        # Determine the correct WebRTC URL
+        if hasattr(self.app, 'ngrok_url') and self.app.ngrok_url:
+            # Use ngrok URL if available (priority)
+            webrtc_base = self.app.ngrok_url.rstrip('/')
+            webrtc_url = f"{webrtc_base}/offer"
+            print(f"Using ngrok WebRTC URL: {webrtc_url}")
+        else:
+            # Use local network URL
+            webrtc_url = f"{protocol}://{server_ip}:{webrtc_port}/offer"
+            print(f"Using local WebRTC URL: {webrtc_url}")
+        
+        print(f"\nTo connect to the WebRTC stream directly in a browser, visit:")
+        print(f"{protocol}://{server_ip}:{webrtc_port}\n")
+        
+        # Create the stereo video plane
         session.upsert @ WebRTCStereoVideoPlane(
-                src="https://192.168.8.102:8080/offer",
-                # iceServer={},
-                key="zed",
-                aspect=1.33334,
-                height = 8,
-                position=[0, -2, -0.2],
-            )
+            src=webrtc_url,
+            key="zed",
+            aspect=1.66667,
+            height=10,
+            position=[0, -2, -0.2],
+        )
+        
         while True:
             await asyncio.sleep(1)
     

@@ -10,7 +10,7 @@ from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer, MediaRelay
 from aiortc.rtcrtpsender import RTCRtpSender
-from multiprocessing import Process, Array, Value, shared_memory
+from multiprocessing import Process, Array, Value, shared_memory, Queue, Event
 
 ROOT = os.path.dirname(__file__)
 
@@ -22,51 +22,211 @@ from aiortc import MediaStreamTrack
 from av import VideoFrame
 import numpy as np
 import time 
+import pyzed.sl as sl
+import cv2
 
 class ZedVideoTrack(MediaStreamTrack):
     kind = "video"
     def __init__(self, queue, toggle_streaming, fps):
         super().__init__()  # Initialize base class
-        # self.img_shape = (2*img_shape[0], img_shape[1], 3)
-        # self.img_height, self.img_width = img_shape[:2]
-        # self.shm_name = shm_name
-        # existing_shm = shared_memory.SharedMemory(name=shm_name)
-        # self.img_array = np.ndarray((self.img_shape[0], self.img_shape[1], 3), dtype=np.uint8, buffer=existing_shm.buf)
+        
+        # Disable direct ZED connection to avoid conflicts
+        self.direct_zed = False
+        print("Using queue-based approach for ZED streaming")
+        
+        # Setup for queue-based approach
         self.img_queue = queue
         self.toggle_streaming = toggle_streaming
         self.streaming_started = False
-        self.timescale = 1000  # Use a timescale of 1000 for milliseconds
-        # self.frame_interval = 1 / fps
-        self._last_frame_time = time.time()
+        self.timescale = 90000  # Standard video timebase (90kHz)
+        self.timestamp = 0
+        self.fps = fps
+        self.frame_interval = int(self.timescale / fps)  # Frame interval in timebase units
         self.start_time = time.time()
+        self.frame_counter = 0
+        self.last_success_time = 0
+        self.consecutive_errors = 0
+        
+        # Setup statistics for debugging
+        self.stats = {
+            "frames_received": 0,
+            "frames_sent": 0,
+            "errors": 0,
+            "last_frame_time": 0,
+            "avg_frame_interval": 0
+        }
+        
+        # Default frame size for fallback frames
+        self.default_height = 720
+        self.default_width = 1280
     
     async def recv(self):
         """
         This method is called when a new frame is needed.
         """
-        # now = time.time()
-        # wait_time = self._last_frame_time + self.frame_interval - now
-        # if wait_time > 0:
-        #     await asyncio.sleep(wait_time)
-        # self._last_frame_time = time.time()
-        # start = time.time()
+        # Signal the main process to start streaming
         if not self.streaming_started:
+            print("WebRTC client connected - starting ZED camera stream")
             self.toggle_streaming.set()
             self.streaming_started = True
-        frame = self.img_queue.get()
-        # self.sem.release()
-        # print("Time to get frame: ", time.time() - start, self.img_queue.qsize())
-        # frame = self.img_array.copy()  # Assuming this is an async function to fetch a frame
-        # frame = np.random.randint(0, 256, size=(480, 640, 3), dtype=np.uint8)
-        # print("recv")
-        # start = time.time()
-        av_frame = VideoFrame.from_ndarray(frame, format='rgb24')  # Convert numpy array to AVFrame
-        timestamp = int((time.time() - self.start_time) * self.timescale)
-        av_frame.pts = timestamp
-        av_frame.time_base = self.timescale
-        # print("Time to process frame: ", time.time() - start)
-        return av_frame
         
+        try:
+            # Try to get a frame from the queue with timeout
+            frame = None
+            try:
+                # Prioritize getting the latest frame
+                if hasattr(self.img_queue, 'qsize') and self.img_queue.qsize() > 1:
+                    # Multiple frames waiting, skip to the most recent
+                    try:
+                        while self.img_queue.qsize() > 1:
+                            frame = self.img_queue.get_nowait()
+                            self.stats["frames_received"] += 1
+                    except:
+                        pass
+                else:
+                    # Just get the next frame with a short timeout
+                    frame = self.img_queue.get(timeout=0.1)
+                    self.stats["frames_received"] += 1
+                
+                # Track timing for statistics
+                now = time.time()
+                if self.stats["last_frame_time"] > 0:
+                    interval = now - self.stats["last_frame_time"]
+                    # Update rolling average (with 90% previous value, 10% new value)
+                    if self.stats["avg_frame_interval"] > 0:
+                        self.stats["avg_frame_interval"] = 0.9 * self.stats["avg_frame_interval"] + 0.1 * interval
+                    else:
+                        self.stats["avg_frame_interval"] = interval
+                self.stats["last_frame_time"] = now
+                
+            except Exception as qerr:
+                if self.consecutive_errors == 0 or self.consecutive_errors % 100 == 0:
+                    print(f"Queue error: {qerr}")
+                frame = None
+            
+            # Check frame validity
+            if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
+                raise ValueError("Invalid or empty frame received")
+                
+            # Get frame info for debugging
+            h, w = frame.shape[:2]
+            if self.frame_counter % 300 == 0:  # Log every ~5 seconds at 60fps
+                avg_fps = 1.0 / self.stats["avg_frame_interval"] if self.stats["avg_frame_interval"] > 0 else 0
+                print(f"WebRTC stream stats: {w}x{h} frames, avg {avg_fps:.1f} fps")
+            
+            # Ensure frame is properly formatted for encoding
+            if frame.dtype != np.uint8:
+                frame = frame.astype(np.uint8)
+            
+            # Convert to RGB if needed
+            if len(frame.shape) == 2:  # Grayscale
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+            elif frame.shape[2] == 4:  # RGBA
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
+            elif frame.shape[2] != 3:  # Not RGB
+                raise ValueError(f"Unsupported frame format: {frame.shape}")
+            
+            # Check if frame needs resizing (H.264 encoder has size limitations)
+            max_width = 2560  # Maximum width for H.264 encoding (increased for stereo view)
+            max_height = 1440  # Maximum height for H.264 encoding
+            
+            # Only resize if absolutely necessary, preserving the stereo view aspect ratio
+            if w > max_width or h > max_height:
+                # Calculate scaling factor, preserving aspect ratio
+                scale = min(max_width/w, max_height/h)
+                new_w, new_h = int(w*scale), int(h*scale)
+                
+                # Ensure even dimensions for video encoding
+                new_w = new_w - (new_w % 2)
+                new_h = new_h - (new_h % 2)
+                
+                frame = cv2.resize(frame, (new_w, new_h))
+                if self.frame_counter % 300 == 0:
+                    print(f"Resized frame from {w}x{h} to {new_w}x{new_h} for encoding (scale={scale:.2f})")
+            
+            # Convert to VideoFrame
+            av_frame = VideoFrame.from_ndarray(frame, format='rgb24')
+            av_frame.pts = self.timestamp
+            av_frame.time_base = '1/90000'
+            self.timestamp += self.frame_interval
+            
+            # Reset error counters on success
+            self.consecutive_errors = 0
+            self.last_success_time = time.time()
+            
+            # Update statistics
+            self.frame_counter += 1
+            self.stats["frames_sent"] += 1
+            
+            # Log occasional status
+            if self.frame_counter % 600 == 0:  # Every 10 seconds at 60fps
+                print(f"WebRTC streaming: {self.stats['frames_sent']} frames sent, {self.stats['errors']} errors")
+                
+            return av_frame
+            
+        except Exception as e:
+            # Track consecutive errors
+            self.consecutive_errors += 1
+            self.stats["errors"] += 1
+            error_duration = time.time() - self.last_success_time if self.last_success_time > 0 else 0
+            
+            # Log errors (but not too frequently)
+            if self.consecutive_errors == 1 or self.consecutive_errors % 300 == 0:
+                print(f"WebRTC streaming error: {e} (after {error_duration:.1f}s without frames)")
+            
+            # Create a black frame as fallback with progress indicator
+            black_frame = np.zeros((360, 640, 3), dtype=np.uint8)
+            
+            # Add error text
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            if self.consecutive_errors > 50:
+                # Alert about persistent errors
+                cv2.putText(black_frame, f"Connection issues detected", 
+                        (20, 50), font, 0.7, (50, 50, 255), 2)
+                cv2.putText(black_frame, f"No frames for {error_duration:.1f}s", 
+                        (20, 90), font, 0.6, (50, 50, 255), 1)
+            else:
+                cv2.putText(black_frame, f"Waiting for ZED frames...", 
+                        (20, 70), font, 0.7, (255, 255, 255), 2)
+            
+            # Add queue status
+            queue_status = "unknown"
+            if hasattr(self.img_queue, 'qsize'):
+                try:
+                    queue_status = str(self.img_queue.qsize())
+                except:
+                    pass
+            cv2.putText(black_frame, f"Frame queue: {queue_status}",
+                    (20, 130), font, 0.5, (200, 200, 100), 1)
+            
+            # Add frame counter as progress indicator
+            progress = int(time.time() * 2) % 20  # 0-19 moving indicator
+            indicator = "[" + " " * progress + "●" + " " * (19-progress) + "]"
+            cv2.putText(black_frame, indicator, 
+                    (20, 200), font, 0.7, (100, 200, 100), 2)
+            
+            # Add statistics
+            stats_text = f"Frames: {self.stats['frames_received']} rcvd, {self.stats['frames_sent']} sent, {self.stats['errors']} errors"
+            cv2.putText(black_frame, stats_text,
+                    (20, 240), font, 0.5, (180, 180, 180), 1)
+            
+            # If many consecutive errors, try to reset streaming
+            if self.consecutive_errors % 100 == 50:
+                print(f"⚠️ WebRTC stream experiencing issues: {self.consecutive_errors} consecutive errors")
+                # Toggle streaming to attempt reset
+                self.toggle_streaming.clear()
+                await asyncio.sleep(0.1)
+                self.toggle_streaming.set()
+            
+            av_frame = VideoFrame.from_ndarray(black_frame, format='rgb24')
+            av_frame.pts = self.timestamp
+            av_frame.time_base = '1/90000'
+            self.timestamp += self.frame_interval
+            return av_frame
+    
+    def __del__(self):
+        print("ZedVideoTrack cleaned up")
+
 
 def force_codec(pc, sender, forced_codec):
     kind = forced_codec.split("/")[0]
@@ -186,7 +346,8 @@ if __name__ == '__main__':
             allow_methods="*",
         )
     })
-    rtc = RTC((960, 640), queue)
+    queue = Queue()
+    rtc = RTC((960, 640), queue, toggle_streaming=Event(), fps=60)
     app.on_shutdown.append(on_shutdown)
     cors.add(app.router.add_get("/", index))
     cors.add(app.router.add_get("/client.js", javascript))

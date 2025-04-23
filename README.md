@@ -103,6 +103,61 @@ settings > Apps > Safari > Advanced > Feature Flags > Enable WebXR Related Featu
 
 8. Click `Enter VR` and ``Allow`` to start the VR session.
 
+#### Quest 3 Stream Connection
+Setup: 
+1. Make sure the Developer Mode in the Quest 3 is enabled.
+1. Install the adb
+    ```bash
+    sudo apt update
+    sudo apt upgrade
+    sudo apt install wget apt-transport-https gnupg2 software-properties-common
+    sudo add-apt-repository universe
+    sudo apt install android-tools-adb android-tools-fastboot
+    ```
+
+Connect the Quest 3 to the PC via USB3.0 cable
+1. In the Quest 3 pop-up window, click the `Always Allow This Device`. After that, you still have to put on the headset and click the pop up notification to allow the perssion.
+1. Check the adb on the PC:
+    ```bash
+    adb devices
+    ```
+1. (Optional) You can also setup the wireless mode:
+    
+    Make sure the USB cable is connected.
+    ```bash
+    # find the quest's ip
+    adb shell ip route      # quest's ip address is the one after src
+    
+    # setup the port, generally 5555
+    adb tcpip <port>
+    adb connect <ipaddress>:<port>
+    ```
+    Then you can disconnect the USB cable. Use `adb devices` to check if the quest is connected to the PC wirelessly.
+
+    To disconnect:
+    ```bash
+    adb disconnect
+    ```
+
+1. Reverse the port from PC to the Quest 3:
+    ```bash
+    adb reverse tcp:8012 tcp:8012
+    ```
+    Here the Open TeleVision is using the port `8012`.
+
+1. Launch the VR
+    ```bash
+    conda activate tv # if you close it
+    cd teleop
+    python zed_vr.py
+    ```
+
+1. Open the browser and go to `http://127.0.0.1:8012/` to check if the Zed Mini is streaming one of its camera.
+
+1. Put on the Quest 3 and go to the same address as above, then click `Enter VR` to see if you can see the stereo images from the Zed Mini.
+
+
+
 ### Network Streaming
 For Meta Quest3, installation of the certificate is not trivial. We need to use a network streaming solution. We use `ngrok` to create a secure tunnel to the server. This method will work for both VisionPro and Meta Quest3.
 
