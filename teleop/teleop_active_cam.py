@@ -8,10 +8,11 @@ from pytransform3d import rotations
 
 import time
 import cv2
+import os
 from constants_vuer import *
 from TeleVision import OpenTeleVision
 import pyzed.sl as sl
-from dynamixel.active_cam import DynamixelAgent
+from dynamixel.active_cam import DynamixelAgent, DynamixelRobotConfig
 from multiprocessing import Array, Process, shared_memory, Queue, Manager, Event, Semaphore
 
 resolution = (720, 1280)
@@ -19,7 +20,18 @@ crop_size_w = 1
 crop_size_h = 0
 resolution_cropped = (resolution[0] - crop_size_h, resolution[1] - 2 * crop_size_w)
 
-agent = DynamixelAgent(port="/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT8IT033-if00-port0")
+custom_config = DynamixelRobotConfig(
+    joint_ids=(1, 2),
+    joint_offsets=(2*np.pi/2, 2*np.pi/2),
+    joint_signs=(-1, -1),
+    gripper_config=None,
+)
+
+# Updated port and using custom config
+agent = DynamixelAgent(
+    port="/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA7NOM6-if00-port0",
+    dynamixel_config=custom_config
+)
 agent._robot.set_torque_mode(True)
 
 # Create a Camera object
@@ -48,20 +60,30 @@ shm = shared_memory.SharedMemory(create=True, size=np.prod(img_shape) * np.uint8
 img_array = np.ndarray((img_shape[0], img_shape[1], 3), dtype=np.uint8, buffer=shm.buf)
 image_queue = Queue()
 toggle_streaming = Event()
-tv = OpenTeleVision(resolution_cropped, shm.name, image_queue, toggle_streaming)
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+cert_path = os.path.join(current_dir, 'cert.pem')
+key_path = os.path.join(current_dir, 'key.pem')
+
+tv = OpenTeleVision(resolution_cropped, shm.name, image_queue, toggle_streaming,
+                    stream_mode='webrtc', cert_file=cert_path, key_file=key_path, ngrok=True)
 
 while True:
     start = time.time()
-
-    head_mat = grd_yup2grd_zup[:3, :3] @ tv.head_matrix[:3, :3] @ grd_yup2grd_zup[:3, :3].T
+    # print(f'tv.head_matrix: {tv.head_matrix}')
+    # head_mat = grd_yup2grd_zup[:3, :3] @ tv.head_matrix[:3, :3] @ grd_yup2grd_zup[:3, :3].T
+    head_mat = grd_yup2grd_zup[:3, :3].T @ tv.head_matrix[:3, :3]
+    # head_mat = tv.head_matrix[:3, :3]
+    # print(f'head_mat: {head_mat}')
     if np.sum(head_mat) == 0:
         head_mat = np.eye(3)
     head_rot = rotations.quaternion_from_matrix(head_mat[0:3, 0:3])
     try:
         ypr = rotations.euler_from_quaternion(head_rot, 2, 1, 0, False)
-        # print(ypr)
-        # agent._robot.command_joint_state([0., 0.4])
-        agent._robot.command_joint_state(ypr[:2])
+        # print(f'ypr: {ypr}')
+        # agent._robot.command_joint_state([0.4, 0.4])
+        # agent._robot.command_joint_state(ypr[:2])
+        agent._robot.command_joint_state([ypr[1], -ypr[2]])
         # print("success")
     except:
         # print("failed")

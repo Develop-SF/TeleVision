@@ -53,7 +53,15 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
         joint_signs=(-1, -1),
         gripper_config=None,
     ), 
-
+    "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA7NOM6-if00-port0": DynamixelRobotConfig(
+        joint_ids=(1, 2),
+        joint_offsets=(
+            2*np.pi/2, 
+            2*np.pi/2, 
+        ),
+        joint_signs=(-1, -1),
+        gripper_config=None,
+    ),
 }
 
 # general we only input port into the class, other info is stored in the dic
