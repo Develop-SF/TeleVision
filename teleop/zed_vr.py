@@ -127,10 +127,10 @@ class ZedVRStreamer:
                 head_mat = np.eye(3)
             head_rot = rotations.quaternion_from_matrix(head_mat[0:3, 0:3])
             ypr = rotations.euler_from_quaternion(head_rot, 2, 1, 0, False)
-            return head_mat
+            return head_mat, ypr
         except Exception:
             # Don't print errors for tracking, just continue
-            return np.eye(3)
+            return np.eye(3), np.zeros(3)
 
     def get_local_ip(self):
         """
@@ -190,7 +190,9 @@ class ZedVRStreamer:
                     self.last_stream_state = stream_state
 
                 # Process head tracking data
-                self.process_head_tracking()
+                head_mat, ypr = self.process_head_tracking()
+                # convert to deg
+                print(f"Head rotation: {ypr * 180 / np.pi}")
 
                 # Grab new images
                 if self.zed.grab(runtime_parameters) == sl.ERROR_CODE.SUCCESS:

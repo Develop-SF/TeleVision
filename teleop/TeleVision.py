@@ -1,7 +1,7 @@
 import time
 from vuer import Vuer
 from vuer.events import ClientEvent
-from vuer.schemas import ImageBackground, group, Hands, WebRTCStereoVideoPlane, DefaultScene
+from vuer.schemas import ImageBackground, group, Hands, WebRTCStereoVideoPlane, DefaultScene, Scene
 from multiprocessing import Array, Process, shared_memory, Queue, Manager, Event, Semaphore
 import numpy as np
 import asyncio
@@ -127,8 +127,8 @@ class OpenTeleVision:
             pass
     
     async def main_webrtc(self, session, fps=60):
-        session.set @ DefaultScene(frameloop="always")
-        session.upsert @ Hands(fps=fps, stream=True, key="hands", showLeft=False, showRight=True)
+        # session.set @ DefaultScene(frameloop="always", grid=False)
+        # session.upsert @ Hands(fps=fps, stream=True, key="hands", showLeft=False, showRight=True)
         
         # Get local network info
         host = self.app.host
@@ -172,14 +172,29 @@ class OpenTeleVision:
         print(f"{protocol}://{server_ip}:{webrtc_port}\n")
         
         # Create the stereo video plane
-        session.upsert @ WebRTCStereoVideoPlane(
+        video_plane = WebRTCStereoVideoPlane(
             src=webrtc_url,
             key="zed",
             aspect=1.66667,
-            height=10,
+            height=9,
             position=[0, -2, -0.2],
+            # transparent=False,
+            # depthWrite=True,
+            # depthTest=True,
+        )
+
+        session.set @ Scene(
+            video_plane,
+            bgChildren=[
+                Hands(fps=fps, stream=True, key="hands", showLeft=True, showRight=True)
+            ],
+            frameloop="always",
+            # grid=False is not needed for Scene unless one is added manually
         )
         
+        # Removed separate upsert for WebRTCStereoVideoPlane as it's now part of Scene
+        # Removed separate upsert for Hands as it's now part of Scene's bgChildren
+
         while True:
             await asyncio.sleep(1)
     
@@ -217,7 +232,7 @@ class OpenTeleVision:
                 # display_image[:self.img_height:2, ::2],
                 # 'jpg' encoding is significantly faster than 'png'.
                 format="jpeg",
-                quality=80,
+                quality=90,
                 key="left-image",
                 interpolate=True,
                 # fixed=True,
@@ -235,7 +250,7 @@ class OpenTeleVision:
                 # display_image[self.img_height::2, ::2],
                 # 'jpg' encoding is significantly faster than 'png'.
                 format="jpeg",
-                quality=80,
+                quality=90,
                 key="right-image",
                 interpolate=True,
                 # fixed=True,
