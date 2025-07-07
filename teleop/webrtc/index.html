@@ -3,40 +3,136 @@
 <head>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WebRTC webcam</title>
+    <title>ZED Stereo Camera - WebRTC Stream</title>
     <style>
+    body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 20px;
+        background-color: #f0f0f0;
+        color: #333;
+    }
+    
+    h1, h2 {
+        color: #2c3e50;
+    }
+    
     button {
-        padding: 8px 16px;
+        padding: 10px 20px;
+        border: none;
+        border-radius: 4px;
+        background-color: #3498db;
+        color: white;
+        font-size: 16px;
+        cursor: pointer;
+        margin-right: 10px;
+        transition: background-color 0.3s;
     }
-
-    video {
-        width: 100%;
+    
+    button:hover {
+        background-color: #2980b9;
     }
-
+    
+    button#stop {
+        background-color: #e74c3c;
+    }
+    
+    button#stop:hover {
+        background-color: #c0392b;
+    }
+    
     .option {
-        margin-bottom: 8px;
+        margin-bottom: 15px;
+        padding: 10px;
+        background-color: #fff;
+        border-radius: 4px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
-
+    
     #media {
         max-width: 1280px;
+        margin: 20px 0;
+    }
+    
+    video {
+        width: 100%;
+        height: auto;
+        background-color: #000;
+        border-radius: 8px;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    }
+    
+    #status-container {
+        margin: 20px 0;
+        padding: 10px 15px;
+        background-color: #ecf0f1;
+        border-left: 4px solid #3498db;
+        border-radius: 4px;
+    }
+    
+    #status {
+        margin: 5px 0;
+        font-weight: normal;
+    }
+    
+    .stereo-info {
+        background-color: #e8f4fd;
+        padding: 10px 15px;
+        margin-top: 20px;
+        border-radius: 4px;
+        border-left: 4px solid #3498db;
+    }
+    
+    @media (max-width: 600px) {
+        body {
+            padding: 10px;
+        }
+        
+        button {
+            width: 100%;
+            margin-bottom: 10px;
+        }
     }
     </style>
 </head>
 <body>
 
+<h1>ZED Stereo Camera Stream</h1>
+
+<div id="status-container">
+    <h3>Connection Status</h3>
+    <p id="status">Ready to connect</p>
+    <div id="connection-debug"></div>
+</div>
+
 <div class="option">
     <input id="use-stun" type="checkbox"/>
-    <label for="use-stun">Use STUN server</label>
+    <label for="use-stun">Use STUN server (helps with connection through firewalls)</label>
 </div>
-<button id="start" onclick="start()">Start</button>
-<button id="stop" style="display: none" onclick="stop()">Stop</button>
+
+<div class="controls">
+    <button id="start" onclick="start()">Connect to Camera</button>
+    <button id="stop" style="display: none" onclick="stop()">Disconnect</button>
+</div>
 
 <div id="media">
-    <h2>Media</h2>
-
-    <audio id="audio" autoplay="true"></audio>
-    <video id="video" autoplay="true" playsinline="true"></video>
+    <h2>Camera Feed</h2>
+    <video id="video" autoplay="true" playsinline="true" muted></video>
 </div>
+
+<div class="stereo-info">
+    <h3>About this Stream</h3>
+    <p>This page displays a stereo camera feed from a ZED camera. The stereo feed contains side-by-side left and right camera views for VR/AR applications.</p>
+    <p><strong>Troubleshooting:</strong></p>
+    <ul>
+        <li>This page must be accessed using <code>http://</code>, not <code>https://</code></li>
+        <li>The WebRTC server must be running on port 8080</li>
+        <li>If you see a black screen, try clicking "Disconnect" then "Connect" again</li>
+        <li>Make sure your device and the server are on the same network</li>
+    </ul>
+</div>
+
+<audio id="audio" autoplay="true" style="display: none"></audio>
 
 <script src="client.js"></script>
 </body>
